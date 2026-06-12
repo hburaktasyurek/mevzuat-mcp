@@ -37,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 app = FastMCP(
     name="MevzuatGovTrMCP",
-    instructions="MCP server for Turkish legislation search and content retrieval. "
+    instructions="MCP server for Turkish legislation search and content retrieval via the listed tools only. "
     "Two data sources: mevzuat.gov.tr (21 tools, Playwright-based) and bedesten.adalet.gov.tr (5 tools, pure REST). "
+    "Do not infer or invent tool names from naming patterns; use only the tool names exposed by this MCP server. "
     "\n\n"
     "== mevzuat.gov.tr tools (21 tools) ==\n"
     "9 legislation types: Kanun, KHK, Tüzük, Kurum Yönetmeliği, Tebliğ, CB Kararnamesi, CB Kararı, CB Yönetmeliği, CB Genelgesi. "
@@ -50,6 +51,7 @@ app = FastMCP(
     "Tools: search_mevzuat (unified search with type filter, supports law number search), "
     "get_mevzuat_content (full text), search_within_mevzuat (article keyword search), "
     "get_mevzuat_gerekce (law rationale/gerekçe), get_mevzuat_madde_tree (article tree/TOC). "
+    "For full text when no type-specific content tool is exposed, use search_mevzuat first and then get_mevzuat_content with the returned mevzuatId. "
     "Solr operators: \"exact\", +required, -prohibited, wildcard*, fuzzy~, \"proximity\"~N, boost^N. "
     "NOTE: AND/OR/NOT do NOT work in search_mevzuat - use +term1 +term2 instead."
 )
@@ -1932,6 +1934,7 @@ async def search_mevzuat(
             "Full-text search in document content (Solr/Lucene syntax). "
             "Searches inside the legislation text, not just the title. "
             "Leave empty to browse/list or use mevzuat_adi for title search. "
+            "Use this for historical or colloquial institution names when the term may appear inside the document text rather than in the title. "
             "Solr operators: \"exact phrase\", +required -prohibited, wildcard*, single?, fuzzy~, fuzzy~N, \"proximity\"~N, boost^N. "
             "NOTE: AND/OR/NOT do NOT work here - use +term1 +term2 instead of term1 AND term2, "
             "use -term instead of NOT term, use 'term1 term2' (space) instead of term1 OR term2. "
@@ -1950,6 +1953,9 @@ async def search_mevzuat(
             "Supports only: simple keywords, trailing wildcard (ticar*), single char wildcard (ticare?). "
             "For exact phrase match use tamCumle=True instead of quotes. "
             "Do NOT use quotes, +, -, ~, ^, or other Solr operators here (they break the search). "
+            "When the user uses common Turkish legal abbreviations, expand them to official long-form Turkish terms when possible. "
+            "For institution names, consider current official names, former official names, colloquial names, and broader root terms. "
+            "If a title search fails for an old/common institution name, retry with broader terms or use phrase for full-text search. "
             "Examples: 'ticaret kanunu', 'ceza', 'gümrük', 'sermaye piyasası', 'gelir vergisi', 'ticar*'. "
             "Can be used alone or together with phrase for combined filtering."
         ),
@@ -1972,6 +1978,10 @@ async def search_mevzuat(
             "KHK (Kanun Hükmünde Kararnameler), TUZUK (Tüzükler), "
             "KKY (Kurum ve Kuruluş Yönetmelikleri), UY (Üniversite Yönetmelikleri), "
             "TEBLIGLER (Tebliğler), MULGA (Mülga Mevzuat). "
+            "For generic yönetmelik searches, use the relevant regulation types: "
+            "KKY for kurum/bakanlık/agency regulations, "
+            "CB_YONETMELIK for Presidential regulations, YONETMELIK for Council of Ministers regulations, "
+            "and UY for university regulations. "
             "Examples: 'KANUN', 'KANUN,KHK', 'TEBLIGLER,KKY'"
         ),
     ),
@@ -2080,6 +2090,7 @@ async def search_mevzuat(
         else:
             output.append(f"Browse" + (f" | Type: {mevzuat_tur}" if mevzuat_tur else " | All types"))
         output.append(f"Results: {result.total_results} total (page {page})")
+        output.append("Use mevzuatId with search_within_mevzuat, get_mevzuat_madde_tree, or get_mevzuat_content.")
         output.append("")
 
         for doc in result.documents:
@@ -2150,7 +2161,8 @@ async def search_within_mevzuat(
         description=(
             "Legislation ID from search_mevzuat results (mevzuatId field). "
             "This is a string ID (e.g., '345097'), NOT the law number. "
-            "First call search_mevzuat to get the mevzuatId."
+            "First call search_mevzuat to get the mevzuatId. "
+            "Do not use this tool to find or identify a legislation document."
         ),
     ),
     keyword: str = Field(
@@ -2170,6 +2182,9 @@ async def search_within_mevzuat(
 ) -> str:
     """
     Search within a specific legislation's articles on bedesten.adalet.gov.tr.
+
+    Do not use this tool to discover which legislation exists. Use search_mevzuat
+    first to find the document and obtain its mevzuatId.
 
     Ideal for large legislation where get_mevzuat_content would return too much text.
     Fetches the full document, splits into individual articles (MADDE), and applies
