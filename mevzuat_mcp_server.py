@@ -1917,6 +1917,7 @@ _BED_VALID_TYPES = {
     "KANUN", "CB_KARARNAME", "YONETMELIK", "CB_YONETMELIK", "CB_KARAR",
     "CB_GENELGE", "KHK", "TUZUK", "KKY", "UY", "TEBLIGLER", "MULGA",
 }
+# Keep regulation-only type handling in agent_search_helpers.py aligned with this Bedesten type list.
 
 
 def _flatten_tree(nodes: list[BedMaddeNode]) -> list[BedMaddeNode]:
@@ -2197,6 +2198,7 @@ async def search_yonetmelik(
                 return error
         else:
             tur_list = list(BED_REGULATION_TYPE_ORDER)
+        tur_label = ",".join(tur_list) if mevzuat_tur else "all regulation types"
 
         if not phrase and not mevzuat_adi:
             return (
@@ -2221,7 +2223,7 @@ async def search_yonetmelik(
         add_strategy("title", mevzuat_adi)
         add_strategy("full text", phrase_query=phrase)
 
-        simplified_source = mevzuat_adi or phrase or aranacak_ifade or ""
+        simplified_source = mevzuat_adi or phrase
         simplified = simplify_regulation_query(simplified_source)
         add_strategy("simplified title", simplified)
         add_strategy("simplified full text", phrase_query=simplified)
@@ -2234,11 +2236,13 @@ async def search_yonetmelik(
         for label, title_query, phrase_query in strategies:
             search_desc = build_bedesten_search_desc(phrase_query, title_query)
             tried.append(f"{label}: {search_desc}")
+            # Regulation helper favors newest regulations first; callers can use search_mevzuat for custom sorting.
+            effective_basliktaAra = True if title_query else basliktaAra
             result = await bedesten_client.search_documents(
                 phrase=phrase_query,
                 mevzuat_adi=title_query,
                 mevzuat_tur_list=tur_list,
-                basliktaAra=basliktaAra,
+                basliktaAra=effective_basliktaAra,
                 tamCumle=tamCumle,
                 page=page,
                 page_size=page_size,
@@ -2264,7 +2268,7 @@ async def search_yonetmelik(
         return format_bedesten_search_result(
             last_result,
             search_desc=last_desc,
-            mevzuat_tur=",".join(tur_list),
+            mevzuat_tur=tur_label,
             page=page,
             notes=notes,
             tried=tried,

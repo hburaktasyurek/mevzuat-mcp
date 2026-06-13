@@ -10,6 +10,18 @@ class EmptySearchResult:
 
 
 class AgentSearchHelperTests(unittest.TestCase):
+    def test_looks_like_full_text_query_detects_supported_syntax(self):
+        self.assertTrue(helpers.looks_like_full_text_query("yolcu OR iptal"))
+        self.assertTrue(helpers.looks_like_full_text_query('"yolcu haklari"'))
+        self.assertTrue(helpers.looks_like_full_text_query("+yolcu -kurum"))
+        self.assertTrue(helpers.looks_like_full_text_query("yolcu~"))
+        self.assertFalse(helpers.looks_like_full_text_query("sivil havacilik"))
+
+    def test_looks_like_short_code_query_detects_regulation_codes(self):
+        self.assertTrue(helpers.looks_like_short_code_query("SHY-YOLCU"))
+        self.assertTrue(helpers.looks_like_short_code_query("SHY"))
+        self.assertFalse(helpers.looks_like_short_code_query("sivil havacilik yolcu haklari"))
+
     def test_plain_aranacak_ifade_routes_to_title(self):
         phrase, title, notes = helpers.resolve_bedesten_query_fields(
             aranacak_ifade="sivil havacilik"
@@ -37,6 +49,16 @@ class AgentSearchHelperTests(unittest.TestCase):
         self.assertEqual(title, "")
         self.assertIn("Moved full-text style title query to phrase.", notes)
 
+    def test_aranacak_ifade_is_not_silently_discarded_when_primary_field_exists(self):
+        phrase, title, notes = helpers.resolve_bedesten_query_fields(
+            phrase="iptal",
+            aranacak_ifade="SHY-YOLCU",
+        )
+
+        self.assertEqual(phrase, "iptal")
+        self.assertEqual(title, "")
+        self.assertIn("Ignored aranacak_ifade because phrase, mevzuat_adi, or mevzuat_no was provided.", notes)
+
     def test_regulation_type_defaults_are_regulation_only(self):
         self.assertEqual(
             helpers.BED_REGULATION_TYPE_ORDER,
@@ -44,6 +66,12 @@ class AgentSearchHelperTests(unittest.TestCase):
         )
         self.assertNotIn("TEBLIGLER", helpers.BED_REGULATION_TYPES)
         self.assertNotIn("KANUN", helpers.BED_REGULATION_TYPES)
+
+    def test_validate_regulation_types_accepts_valid_input(self):
+        tur_list, error = helpers.validate_regulation_types("KKY,UY")
+
+        self.assertEqual(tur_list, ["KKY", "UY"])
+        self.assertIsNone(error)
 
     def test_validate_regulation_types_rejects_non_regulation_type(self):
         tur_list, error = helpers.validate_regulation_types("KANUN")

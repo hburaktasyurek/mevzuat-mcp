@@ -95,11 +95,14 @@ def resolve_bedesten_query_fields(
         else:
             mevzuat_adi = fallback
             notes.append("Interpreted aranacak_ifade as mevzuat_adi.")
+    elif fallback:
+        notes.append("Ignored aranacak_ifade because phrase, mevzuat_adi, or mevzuat_no was provided.")
 
     return phrase, mevzuat_adi, notes
 
 
 def build_bedesten_search_desc(phrase: str = "", mevzuat_adi: str = "") -> str:
+    """Build a compact human/agent-readable label for Bedesten search inputs."""
     parts = []
     if phrase:
         parts.append(f"phrase='{phrase}'")
