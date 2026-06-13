@@ -37,6 +37,7 @@ dependencies = [
     "uvicorn>=0.23.0",
     "numpy>=1.24.0",
     "openai>=1.0.0",
+    "redis>=5.0.0",
 ]
 
 [project.urls]
@@ -48,5 +49,5 @@ dependencies = [
 mevzuat-mcp = "mevzuat_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["mevzuat_mcp_server", "mevzuat_client", "mevzuat_models", "article_search", "bedesten_client", "bedesten_models", "agent_search_helpers"]
+py-modules = ["mevzuat_mcp_server", "mevzuat_client", "mevzuat_models", "article_search", "bedesten_client", "bedesten_models", "agent_search_helpers", "bedesten_request_guard"]
 packages = ["semantic_search"]

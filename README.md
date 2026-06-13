@@ -165,6 +165,18 @@ CB Kararı ve CB Genelgesi gibi PDF tabanlı mevzuatlar için Mistral OCR kullan
    ```
 3. API anahtarı olmadan da sistem çalışır, ancak PDF'ler markitdown ile işlenir (daha düşük kalite)
 
+### Bedesten Cache ve Rate Koruması
+
+Birden fazla ajan aynı anda çalışırken Bedesten API limitlerine takılmayı azaltmak için Redis cache ve istek sınırlama ayarları kullanılabilir:
+
+```bash
+BEDESTEN_REDIS_URL=redis://localhost:6379/0  # yoksa REDIS_URL de kullanılır
+BEDESTEN_MAX_CONCURRENCY=2                   # aynı anda Bedesten'e gidecek en fazla istek
+BEDESTEN_MIN_REQUEST_INTERVAL_SECONDS=0.25   # Bedesten istekleri arasında minimum bekleme
+```
+
+Redis ayarlanmazsa sistem in-memory cache ile çalışmaya devam eder.
+
 ---
 🛠️ **Kullanılabilir Araçlar (MCP Tools)**
 
