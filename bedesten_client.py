@@ -12,12 +12,14 @@ import base64
 from datetime import datetime, timedelta
 import html
 import logging
+import os
 import re
 import time
 from typing import Dict, List, Optional, Any
 
 import httpx
 
+from bedesten_request_guard import BedestenRequestGuard, make_cache_key
 from bedesten_models import (
     MevzuatTurEnum,
     BedMevzuatDocument,
@@ -41,6 +43,8 @@ HEADERS = {
 APP_NAME = "UyapMevzuat"
 BEDESTEN_DEFAULT_PAGE_SIZE = 20
 BEDESTEN_MAX_PAGE_SIZE = 20
+BEDESTEN_DEFAULT_MAX_CONCURRENCY = 2
+BEDESTEN_DEFAULT_MIN_REQUEST_INTERVAL = 0.25
 
 
 def _wrap(data: dict) -> dict:
@@ -90,11 +94,67 @@ def _decode_base64(raw: str) -> str:
         return raw
 
 
+def _create_redis_client_from_env() -> Optional[Any]:
+    redis_url = os.getenv("BEDESTEN_REDIS_URL") or os.getenv("REDIS_URL")
+    if not redis_url:
+        return None
+    try:
+        import redis.asyncio as redis_asyncio
+    except Exception:
+        logger.warning("Redis URL configured but redis package is not installed; using in-memory Bedesten cache")
+        return None
+    return redis_asyncio.from_url(redis_url, decode_responses=False)
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, value, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, value, default)
+        return default
+
+
 class BedestenClient:
     """Client for bedesten.adalet.gov.tr/mevzuat API."""
 
-    def __init__(self, cache_ttl: int = 3600, enable_cache: bool = True):
+    def __init__(
+        self,
+        cache_ttl: int = 3600,
+        enable_cache: bool = True,
+        max_concurrency: Optional[int] = None,
+        min_request_interval: Optional[float] = None,
+        redis_client: Optional[Any] = None,
+    ):
+        redis_client = redis_client if redis_client is not None else _create_redis_client_from_env()
+        if max_concurrency is None:
+            max_concurrency = _env_int("BEDESTEN_MAX_CONCURRENCY", BEDESTEN_DEFAULT_MAX_CONCURRENCY)
+        if min_request_interval is None:
+            min_request_interval = _env_float(
+                "BEDESTEN_MIN_REQUEST_INTERVAL_SECONDS",
+                BEDESTEN_DEFAULT_MIN_REQUEST_INTERVAL,
+            )
         self._cache = _Cache(ttl=cache_ttl) if enable_cache else None
+        self._request_guard = BedestenRequestGuard(
+            enable_cache=enable_cache,
+            cache_ttl=cache_ttl,
+            redis_client=redis_client,
+            max_concurrency=max_concurrency,
+            min_request_interval=min_request_interval,
+        )
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
             headers=HEADERS,
@@ -201,32 +261,40 @@ class BedestenClient:
         if resmi_gazete_sayisi:
             inner["resmiGazeteSayisi"] = resmi_gazete_sayisi
 
-        try:
-            resp = await self._client.post("/searchDocuments", json=_wrap_paging(inner))
-            resp.raise_for_status()
-            body = resp.json()
+        async def load_search() -> BedSearchResult:
+            try:
+                resp = await self._client.post("/searchDocuments", json=_wrap_paging(inner))
+                resp.raise_for_status()
+                body = resp.json()
 
-            meta = body.get("metadata", {})
-            if meta.get("FMTY") != "SUCCESS":
+                meta = body.get("metadata", {})
+                if meta.get("FMTY") != "SUCCESS":
+                    return BedSearchResult(
+                        error_message=meta.get("FMTE", "Unknown error"),
+                        query_used=phrase,
+                    )
+
+                data = body.get("data") or {}
+                documents = []
+                for doc in data.get("mevzuatList", []):
+                    documents.append(BedMevzuatDocument.model_validate(doc))
+
                 return BedSearchResult(
-                    error_message=meta.get("FMTE", "Unknown error"),
+                    documents=documents,
+                    total_results=data.get("total", 0),
+                    start=data.get("start", 0),
                     query_used=phrase,
                 )
+            except Exception as e:
+                logger.exception("bedesten search error")
+                return BedSearchResult(error_message=str(e), query_used=phrase)
 
-            data = body.get("data") or {}
-            documents = []
-            for doc in data.get("mevzuatList", []):
-                documents.append(BedMevzuatDocument.model_validate(doc))
-
-            return BedSearchResult(
-                documents=documents,
-                total_results=data.get("total", 0),
-                start=data.get("start", 0),
-                query_used=phrase,
-            )
-        except Exception as e:
-            logger.exception("bedesten search error")
-            return BedSearchResult(error_message=str(e), query_used=phrase)
+        cache_key = make_cache_key("searchDocuments", inner)
+        return await self._request_guard.get_or_load(
+            cache_key,
+            load_search,
+            should_cache=lambda result: not result.error_message,
+        )
 
     # ------------------------------------------------------------------
     # 2. Get full document content (base64 HTML/PDF)
