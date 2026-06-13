@@ -11,9 +11,9 @@ Bu proje, Adalet Bakanlığı'na ait Mevzuat Bilgi Sistemi'ne (`mevzuat.gov.tr`)
 🎯 **Temel Özellikler**
 
 * Adalet Bakanlığı Mevzuat Bilgi Sistemi'ne programatik erişim için standart bir MCP arayüzü.
-* **26 farklı tool** ile kapsamlı mevzuat erişimi (iki farklı veri kaynağı):
+* **27 farklı tool** ile kapsamlı mevzuat erişimi (iki farklı veri kaynağı):
     * **mevzuat.gov.tr** üzerinden 21 araç (türe özel arama ve içerik)
-    * **bedesten.adalet.gov.tr** üzerinden 5 araç (birleşik arama, gerekçe, içindekiler)
+    * **bedesten.adalet.gov.tr** üzerinden 6 araç (birleşik arama, yönetmelik arama, gerekçe, içindekiler)
 * Desteklenen 12 mevzuat türü:
     * **Kanun** - Türkiye Cumhuriyeti kanunları
     * **KHK** - Kanun Hükmünde Kararnameler
@@ -30,7 +30,7 @@ Bu proje, Adalet Bakanlığı'na ait Mevzuat Bilgi Sistemi'ne (`mevzuat.gov.tr`)
 * **mevzuat.gov.tr araçları (21 tool)**: Her mevzuat türü için çift tool yapısı:
     * **Arama tool'u**: Başlık ve içerikte arama, Boolean operatörler (AND, OR, NOT), tarih filtreleme
     * **İçinde arama tool'u**: Madde bazında arama (keyword + semantik), alakalılık skoru ile sıralama
-* **bedesten.adalet.gov.tr araçları (5 tool)**: Tüm mevzuat türlerini tek araçla kapsar:
+* **bedesten.adalet.gov.tr araçları (6 tool)**: Tüm mevzuat türlerini tek araçla kapsar:
     * **`search_mevzuat`**: 12 türde birleşik arama (başlık, içerik, numara, RG tarihi/sayısı filtreleme)
     * **`get_mevzuat_content`**: Tam metin getirme
     * **`search_within_mevzuat`**: Madde bazında anahtar kelime araması
@@ -168,7 +168,7 @@ CB Kararı ve CB Genelgesi gibi PDF tabanlı mevzuatlar için Mistral OCR kullan
 ---
 🛠️ **Kullanılabilir Araçlar (MCP Tools)**
 
-Bu FastMCP sunucusu LLM modelleri için **26 araç** sunar (iki farklı veri kaynağı).
+Bu FastMCP sunucusu LLM modelleri için **27 araç** sunar (iki farklı veri kaynağı).
 
 ### A. mevzuat.gov.tr Araçları (21 araç)
 
@@ -228,12 +228,13 @@ Türe özel arama ve içerik araçları. Her mevzuat türü için ayrı tool'lar
 * `case_sensitive`: Büyük/küçük harf duyarlılığı (sadece keyword modunda)
 * `max_results`: Maksimum sonuç sayısı
 
-### B. bedesten.adalet.gov.tr Araçları (5 araç)
+### B. bedesten.adalet.gov.tr Araçları (6 araç)
 
 Tüm mevzuat türlerini tek araçla kapsayan birleşik araçlar. Gerekçe ve içindekiler gibi ek özellikler sunar.
 
 #### **`search_mevzuat`** - Birleşik Mevzuat Arama
 Tüm 12 mevzuat türünde başlık ve içerik araması yapar.
+* `aranacak_ifade`: Ajan uyumluluk parametresi; düz Türkçe ifadeler başlık aramasına, Boolean/full-text benzeri ifadeler içerik aramasına yönlendirilir
 * `phrase`: İçerikte tam metin arama (Solr sözdizimi)
 * `mevzuat_adi`: Mevzuat adı/başlığında arama
 * `mevzuat_no`: Mevzuat numarası filtresi
@@ -243,6 +244,15 @@ Tüm 12 mevzuat türünde başlık ve içerik araması yapar.
 * `resmi_gazete_tarihi_start`, `resmi_gazete_tarihi_end`: Resmi Gazete tarih aralığı filtresi (GG/AA/YYYY)
 * `resmi_gazete_sayisi`: Resmi Gazete sayısı filtresi
 * `page`, `page_size`: Sayfalama (`page_size` varsayılan 20, en fazla 20; Bedesten API daha büyük değerleri reddeder)
+
+#### **`search_yonetmelik`** - Yönetmelik Odaklı Arama
+Yönetmelik ve ikincil düzenleme sorularında ajanların doğru yönetmelik türlerini tek araçla aramasını sağlar.
+* Varsayılan türler: `KKY`, `CB_YONETMELIK`, `YONETMELIK`, `UY`
+* `aranacak_ifade`: Ajan uyumluluk parametresi; düz ifadeler başlık aramasına, Boolean/full-text benzeri ifadeler içerik aramasına yönlendirilir
+* `mevzuat_adi`: Resmi başlığa yakın Türkçe kök terimlerle başlık araması
+* `phrase`: Resmi başlık bilinmediğinde veya kısa ad başlıkta geçmeyebileceğinde içerik araması
+* `mevzuat_tur`: Sadece yönetmelik türleriyle sınırlandırılabilir
+* Sonuç yoksa denenen stratejileri ve kısa adların resmi başlıkta birebir geçmeyebileceğine dair yönlendirmeyi döndürür
 
 #### **`get_mevzuat_content`** - Tam Metin Getirme
 Bir mevzuatın tam metnini düz metin olarak getirir.
