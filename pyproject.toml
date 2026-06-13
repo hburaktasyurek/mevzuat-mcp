@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mevzuat-mcp"
 version = "1.0.0"
-description = "MCP Server for Turkish Legislation - 26 tools for comprehensive access to Turkish laws, decrees, regulations and circulars"
+description = "MCP Server for Turkish Legislation - 27 tools for comprehensive access to Turkish laws, decrees, regulations and circulars"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -48,5 +48,5 @@ dependencies = [
 mevzuat-mcp = "mevzuat_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["mevzuat_mcp_server", "mevzuat_client", "mevzuat_models", "article_search", "bedesten_client", "bedesten_models"]
+py-modules = ["mevzuat_mcp_server", "mevzuat_client", "mevzuat_models", "article_search", "bedesten_client", "bedesten_models", "agent_search_helpers"]
 packages = ["semantic_search"]

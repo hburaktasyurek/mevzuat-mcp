@@ -9,6 +9,15 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
+from agent_search_helpers import (
+    BED_REGULATION_TYPE_ORDER,
+    build_bedesten_search_desc,
+    format_bedesten_search_result,
+    looks_like_short_code_query,
+    resolve_bedesten_query_fields,
+    simplify_regulation_query,
+    validate_regulation_types,
+)
 from mevzuat_client import MevzuatApiClientNew
 from mevzuat_models import (
     MevzuatSearchRequestNew,
@@ -38,12 +47,13 @@ logger = logging.getLogger(__name__)
 app = FastMCP(
     name="MevzuatGovTrMCP",
     instructions="MCP server for Turkish legislation search and content retrieval via the listed tools only. "
-    "Two data sources: mevzuat.gov.tr (21 tools, Playwright-based) and bedesten.adalet.gov.tr (5 tools, pure REST). "
+    "Two data sources: mevzuat.gov.tr (21 tools, Playwright-based) and bedesten.adalet.gov.tr (6 tools, pure REST). "
     "Do not infer or invent tool names from naming patterns; use only the tool names exposed by this MCP server. "
     "\n\n"
     "== Tool choice quick guide ==\n"
     "If the user provides an official legislation number such as 3065, 5237, 6102, or 6362, use bedesten search_mevzuat with mevzuat_no. "
     "If the user provides a topic/title phrase, use either the relevant mevzuat.gov.tr type-specific search tool or bedesten search_mevzuat with mevzuat_adi/phrase. "
+    "If a law search is insufficient and the question concerns implementation details, procedures, applications, permits, passenger rights, institutional duties, or secondary legislation, use search_yonetmelik before repeating broad law searches. "
     "After search_mevzuat, use the returned mevzuatId with get_mevzuat_content, search_within_mevzuat, or get_mevzuat_madde_tree; mevzuatId is not the legislation number. "
     "\n\n"
     "== mevzuat.gov.tr tools (21 tools) ==\n"
@@ -51,10 +61,10 @@ app = FastMCP(
     "Each type has search and search_within tools. search_within supports keyword (AND/OR/NOT) and semantic search (OPENROUTER_API_KEY). "
     "IMPORTANT: These search tools are keyword-based (not by law number) - use 'katma değer vergisi' not '3065'. "
     "\n\n"
-    "== bedesten.adalet.gov.tr tools (5 tools) ==\n"
+    "== bedesten.adalet.gov.tr tools (6 tools) ==\n"
     "Alternative API, no auth needed, supports 12 legislation types and Solr/Lucene search operators. "
     "page_size must be 1-20 because the upstream API rejects larger pages. "
-    "Tools: search_mevzuat (unified search with type filter, supports law number search), "
+    "Tools: search_mevzuat (unified search with type filter, supports law number search), search_yonetmelik (regulation-focused search), "
     "get_mevzuat_content (full text), search_within_mevzuat (article keyword search), "
     "get_mevzuat_gerekce (law rationale/gerekçe), get_mevzuat_madde_tree (article tree/TOC). "
     "For full text when no type-specific content tool is exposed, use search_mevzuat first and then get_mevzuat_content with the returned mevzuatId. "
@@ -1907,6 +1917,7 @@ _BED_VALID_TYPES = {
     "KANUN", "CB_KARARNAME", "YONETMELIK", "CB_YONETMELIK", "CB_KARAR",
     "CB_GENELGE", "KHK", "TUZUK", "KKY", "UY", "TEBLIGLER", "MULGA",
 }
+# Keep regulation-only type handling in agent_search_helpers.py aligned with this Bedesten type list.
 
 
 def _flatten_tree(nodes: list[BedMaddeNode]) -> list[BedMaddeNode]:
@@ -1942,9 +1953,9 @@ async def search_mevzuat(
     phrase: str = Field(
         "",
         description=(
-            "Full-text search in document content (Solr/Lucene syntax). "
-            "Searches inside the legislation text, not just the title. "
-            "Leave empty to browse/list or use mevzuat_adi for title search. "
+            "Full-text search in document content. Use this for broad concept search, content search, "
+            "or Boolean/Solr-like expressions. Searches inside the legislation text, not just the title. "
+            "Leave empty to browse/list or use mevzuat_adi for official title/root title terms. "
             "Use this for historical or colloquial institution names when the term may appear inside the document text rather than in the title. "
             "Solr operators: \"exact phrase\", +required -prohibited, wildcard*, single?, fuzzy~, fuzzy~N, \"proximity\"~N, boost^N. "
             "NOTE: AND/OR/NOT do NOT work here - use +term1 +term2 instead of term1 AND term2, "
@@ -1956,11 +1967,19 @@ async def search_mevzuat(
             "'\"yatırımcı tazmin\"~5' (proximity within 5 words), 'yatırımcı^2 tazmin' (boost first term)"
         ),
     ),
+    aranacak_ifade: Optional[str] = Field(
+        None,
+        description=(
+            "Agent compatibility search input. Use this when unsure whether the query belongs in title or full-text search. "
+            "The tool routes plain Turkish search text to mevzuat_adi and Boolean/full-text style text to phrase."
+        ),
+    ),
     mevzuat_adi: str = Field(
         "",
         description=(
-            "Title/keyword search (Aranacak Kavram). Searches in legislation title/name. "
-            "Use Turkish keywords, not law numbers. Multiple words are AND-matched (all must appear in title). "
+            "Official title/root title term search (Aranacak Kavram). Searches in legislation title/name. "
+            "Use Turkish official-title words or close root terms, not law numbers and not short/common names alone. "
+            "Multiple words are AND-matched (all must appear in title). "
             "Supports only: simple keywords, trailing wildcard (ticar*), single char wildcard (ticare?). "
             "For exact phrase match use tamCumle=True instead of quotes. "
             "Do NOT use quotes, +, -, ~, ^, or other Solr operators here (they break the search). "
@@ -2052,6 +2071,7 @@ async def search_mevzuat(
     Search modes:
     - mevzuat_adi: Title/keyword search (recommended, searches legislation name)
     - phrase: Full-text content search (Solr syntax, searches inside document body)
+    - aranacak_ifade: Compatibility input; routes plain text to title search and full-text style queries to phrase
     - mevzuat_no: Direct number lookup (e.g., '5237' for TCK)
     - Browse: Leave all empty to list by type
 
@@ -2067,6 +2087,13 @@ async def search_mevzuat(
     - get_mevzuat_gerekce: Law rationale (if gerekceId is present in results)
     """
     try:
+        phrase, mevzuat_adi, notes = resolve_bedesten_query_fields(
+            phrase=phrase,
+            mevzuat_adi=mevzuat_adi,
+            mevzuat_no=mevzuat_no,
+            aranacak_ifade=aranacak_ifade,
+        )
+
         tur_list = None
         if mevzuat_tur:
             tur_list = [t.strip().upper() for t in mevzuat_tur.split(",") if t.strip().upper() in _BED_VALID_TYPES]
@@ -2088,52 +2115,168 @@ async def search_mevzuat(
             sort_field=sort_field, sort_direction="desc",
         )
 
-        if result.error_message:
-            return f"Search error: {result.error_message}"
-
-        search_desc = ""
-        if phrase:
-            search_desc += f"phrase='{phrase}'"
-        if mevzuat_adi:
-            search_desc += f"{' + ' if search_desc else ''}title='{mevzuat_adi}'"
-
-        if not result.documents:
-            return f"No results found for {search_desc or 'browse'}" + (f" (type: {mevzuat_tur})" if mevzuat_tur else "")
-
-        output = []
-        if search_desc:
-            output.append(f"Search: {search_desc}" + (f" | Type: {mevzuat_tur}" if mevzuat_tur else ""))
-        else:
-            output.append(f"Browse" + (f" | Type: {mevzuat_tur}" if mevzuat_tur else " | All types"))
-        output.append(f"Results: {result.total_results} total (page {page})")
-        output.append("Use mevzuatId with search_within_mevzuat, get_mevzuat_madde_tree, or get_mevzuat_content.")
-        output.append("")
-
-        for doc in result.documents:
-            tur_name = ""
-            if isinstance(doc.mevzuat_tur, dict):
-                tur_name = doc.mevzuat_tur.get("description", doc.mevzuat_tur.get("name", ""))
-            elif isinstance(doc.mevzuat_tur, str):
-                tur_name = doc.mevzuat_tur
-
-            line = f"- [{doc.mevzuat_no}] {doc.mevzuat_adi}"
-            if tur_name:
-                line += f" ({tur_name})"
-            line += f" | mevzuatId: {doc.mevzuat_id}"
-            if doc.resmi_gazete_tarihi:
-                # Format date: strip time portion
-                rg = doc.resmi_gazete_tarihi
-                if "T" in rg:
-                    rg = rg.split("T")[0]
-                line += f" | RG: {rg}"
-            if doc.gerekce_id:
-                line += f" | gerekceId: {doc.gerekce_id}"
-            output.append(line)
-
-        return "\n".join(output)
+        return format_bedesten_search_result(
+            result,
+            search_desc=build_bedesten_search_desc(phrase, mevzuat_adi),
+            mevzuat_tur=mevzuat_tur,
+            page=page,
+            notes=notes,
+        )
 
     except Exception as e:
         logger.exception("Error in search_mevzuat")
+        return f"An unexpected error occurred: {str(e)}"
+
+
+@app.tool()
+async def search_yonetmelik(
+    aranacak_ifade: Optional[str] = Field(
+        None,
+        description=(
+            "Agent-friendly regulation search input. Use this first for Turkish regulation/secondary legislation questions. "
+            "Plain Turkish text is searched as title/root title terms first; Boolean/full-text style text is searched in document content."
+        ),
+    ),
+    mevzuat_adi: str = Field(
+        "",
+        description=(
+            "Official regulation title/root title term search. Do not use short/common codes alone when the official title is unknown. "
+            "Do not put Boolean operators here; use phrase or aranacak_ifade instead."
+        ),
+    ),
+    phrase: str = Field(
+        "",
+        description=(
+            "Full-text content search for regulation documents. Use when the official title is unknown, "
+            "a short/common code may not appear in the title, or a concept should be searched inside regulation text."
+        ),
+    ),
+    mevzuat_tur: Optional[str] = Field(
+        None,
+        description=(
+            "Optional regulation type filter. Allowed values only: KKY, CB_YONETMELIK, YONETMELIK, UY. "
+            "Leave empty to search all regulation types."
+        ),
+    ),
+    basliktaAra: bool = Field(
+        True,
+        description="Title search mode passed to Bedesten for mevzuat_adi searches (default: true).",
+    ),
+    tamCumle: bool = Field(
+        False,
+        description="Exact phrase match for mevzuat_adi searches (default: false).",
+    ),
+    page: int = Field(1, ge=1, description="Page number (1-based, default: 1)"),
+    page_size: int = Field(
+        BEDESTEN_DEFAULT_PAGE_SIZE,
+        ge=1,
+        le=BEDESTEN_MAX_PAGE_SIZE,
+        description=f"Results per page (1-{BEDESTEN_MAX_PAGE_SIZE}, default: {BEDESTEN_DEFAULT_PAGE_SIZE}).",
+    ),
+) -> str:
+    """
+    Search Turkish regulations through Bedesten with agent-friendly fallbacks.
+
+    Use this as the primary entry point when a question likely depends on secondary
+    legislation, implementation rules, procedures, applications, permits, passenger
+    rights, institutional duties, or regulation-level detail.
+
+    This tool does not expand short codes into hard-coded official titles. If a short
+    code or colloquial name is not found, it returns guidance to retry with official
+    title/root Turkish terms instead of blindly repeating the same short-code search.
+    """
+    try:
+        phrase, mevzuat_adi, notes = resolve_bedesten_query_fields(
+            phrase=phrase,
+            mevzuat_adi=mevzuat_adi,
+            aranacak_ifade=aranacak_ifade,
+        )
+
+        if mevzuat_tur:
+            tur_list, error = validate_regulation_types(mevzuat_tur)
+            if error:
+                return error
+        else:
+            tur_list = list(BED_REGULATION_TYPE_ORDER)
+        tur_label = ",".join(tur_list) if mevzuat_tur else "all regulation types"
+
+        if not phrase and not mevzuat_adi:
+            return (
+                "search_yonetmelik requires aranacak_ifade, mevzuat_adi, or phrase. "
+                "Avoid blind browsing for regulations; use official title/root Turkish terms or full-text concepts."
+            )
+
+        strategies: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add_strategy(label: str, title_query: str = "", phrase_query: str = "") -> None:
+            title_query = (title_query or "").strip()
+            phrase_query = (phrase_query or "").strip()
+            if not title_query and not phrase_query:
+                return
+            key = (title_query, phrase_query)
+            if key in seen:
+                return
+            seen.add(key)
+            strategies.append((label, title_query, phrase_query))
+
+        add_strategy("title", mevzuat_adi)
+        add_strategy("full text", phrase_query=phrase)
+
+        simplified_source = mevzuat_adi or phrase
+        simplified = simplify_regulation_query(simplified_source)
+        add_strategy("simplified title", simplified)
+        add_strategy("simplified full text", phrase_query=simplified)
+
+        tried: list[str] = []
+        last_result = None
+        last_desc = ""
+        query_for_short_code_warning = aranacak_ifade or mevzuat_adi or phrase
+
+        for label, title_query, phrase_query in strategies:
+            search_desc = build_bedesten_search_desc(phrase_query, title_query)
+            tried.append(f"{label}: {search_desc}")
+            # Regulation helper favors newest regulations first; callers can use search_mevzuat for custom sorting.
+            effective_basliktaAra = True if title_query else basliktaAra
+            result = await bedesten_client.search_documents(
+                phrase=phrase_query,
+                mevzuat_adi=title_query,
+                mevzuat_tur_list=tur_list,
+                basliktaAra=effective_basliktaAra,
+                tamCumle=tamCumle,
+                page=page,
+                page_size=page_size,
+                sort_field="RESMI_GAZETE_TARIHI",
+                sort_direction="desc",
+            )
+            last_result = result
+            last_desc = search_desc
+            if result.error_message or result.documents:
+                break
+
+        guidance = None
+        if looks_like_short_code_query(query_for_short_code_warning):
+            guidance = (
+                "Short/common regulation codes may not appear in official titles. "
+                "Do not repeat the same short-code title search blindly; retry with official title/root Turkish terms "
+                "or use phrase for full-text concept search."
+            )
+
+        if last_result is None:
+            return "No regulation search strategy could be built from the provided input."
+
+        return format_bedesten_search_result(
+            last_result,
+            search_desc=last_desc,
+            mevzuat_tur=tur_label,
+            page=page,
+            notes=notes,
+            tried=tried,
+            no_results_guidance=guidance,
+        )
+
+    except Exception as e:
+        logger.exception("Error in search_yonetmelik")
         return f"An unexpected error occurred: {str(e)}"
 
 
